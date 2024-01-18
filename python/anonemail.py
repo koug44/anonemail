@@ -1,4 +1,4 @@
-#!/usr/bin/python3
+
 
 """
 Copyright (c) 2015-2016 "Vade Secure"
@@ -25,6 +25,7 @@ import base64
 import argparse
 import quopri
 import random
+import socket
 
 from email.parser import BytesFeedParser
 from bs4 import BeautifulSoup
@@ -74,6 +75,27 @@ def replace(text, elmts):
 def ano_x(str):
     """ Replace a string by 'xxxx' """
     return re.sub(r'\w', 'x', str)
+
+
+def clean_ip(hdr):
+    """ Replace IPv4 and IPv6 in headers """
+
+    # IPv4
+    hdr = re.sub(r"[0-9]+(?:\.[0-9]+){3}", "0.0.0.0", hdr)
+
+    # IPv6
+    cursor = 0
+    ipv6 = re.compile(r"([a-f0-9:]+:+)+[a-f0-9]+")
+    while match := ipv6.search(hdr, cursor):
+        try:
+            socket.inet_pton(socket.AF_INET6, match.group())
+            hdr = hdr.replace(match.group(), "::")
+        except OSError:
+            pass
+        finally:
+            cursor = match.end()
+
+    return hdr
 
 
 def tokenize_to(to):
@@ -307,6 +329,9 @@ def create_parser():
                         help="Sampling address", default=SMPADDR)
     parser.add_argument('--no-dkim', dest='no_dkim',
                         help="Remove DKIM fields", action='store_true')
+    parser.add_argument('--no-ip', dest='no_ip', default=False,
+                        help="Remove IP addresses from headers",
+                        action="store_true")
     parser.add_argument('-s', '--anonymise-sender',
                         dest="is_sender_anon",
                         action="store_true", default=False)
@@ -342,7 +367,8 @@ def get_streams(args):
         out_streams.append(FileMailOutStream(
                             args.dest_dir, args.error_dir,
                             args.sample_dir, args.sample_dir is not None))
-    if len(out_streams) == 0:
+
+    if not len(out_streams):
         print("You can't use --no-mail without --to-file")
         exit()
 
@@ -356,11 +382,18 @@ def get_newmsg(msg, elmts):
     hdr_end = msg.as_string().find('\n\n')
     if hdr_end == -1:
         error(msg, "No neck", out_streams)
-    else:
-        hdr = msg.as_string()[:hdr_end]
-        new_hdr = url_replace(hdr)
-        (new_hdr, count) = replace(new_hdr, elmts)
-        new_msg = new_hdr + msg.as_string()[hdr_end:]
+
+    hdr = msg.as_string()[:hdr_end]
+
+    # Replace URLs into headers
+    hdr = url_replace(hdr)
+
+    # If requested, clean IP addresses in headers
+    if args.no_ip:
+        hdr = clean_ip(hdr)
+
+    hdr, count = replace(hdr, elmts)
+    new_msg = hdr + msg.as_string()[hdr_end:]
 
     # Force re-encoding to avoid issues during sending with Python SMTP Lib
     if msg.get_content_charset() is not None:
@@ -374,6 +407,7 @@ def get_newmsg(msg, elmts):
 
 def clean_hdr(msg, args, elmts):
     """ Anonymize headers """
+
     # Looking for custom header to clean
     for cstmhdr in CSTMHDR:
         if cstmhdr in msg.keys():
@@ -403,7 +437,7 @@ def main():
 
     # Grab recipient from To field
     dest = get_dest(msg, args.orig_to)
-    if len(dest) == 0:
+    if not len(dest):
         error(msg, "No explicit To", out_streams)
 
     # Get tokens from recipient
