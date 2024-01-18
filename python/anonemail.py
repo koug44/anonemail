@@ -16,24 +16,33 @@ You should have received a copy of the GNU General Public License
 along with this program.  If not, see <http://www.gnu.org/licenses/>.
 """
 
-import re, urllib, io
+import re
+import urllib
+import io
 import email
+import sys
+import base64
+import argparse
+import quopri
+import random
+
 from email.parser import BytesFeedParser
-import argparse,sys,base64, quopri, random
 from bs4 import BeautifulSoup
 from email.header import decode_header
+
 try:
     from mailoutstream import FileMailOutStream, SMTPMailOutStream
 except ImportError:
     from python.mailoutstream import FileMailOutStream, SMTPMailOutStream
 
-# Separators for getting user "parts" as in name.surname@email.tld or name_surname@email.tld
+# Separators for getting user "parts"
+# as in name.surname@email.tld or name_surname@email.tld
 USERSEP = re.compile("[._-]")
 # Separators for multiple/list of emails
 # eg: in the To field
 TKENSEP = re.compile("[ ,;]")
 # List of emails used
-FROMADDR="from@email.tld"
+FROMADDR = "from@email.tld"
 FWDADDR = "sampling@email.tld"
 ERRADDR = "oops@email.tld"
 SMPADDR = "sampling@email.tld"
@@ -46,8 +55,10 @@ CSTMHDR = ("X-Mailer-RecptId",)
 # Headers to decode before tokenizing (RFC 2822)
 CODDHDR = ("To", "Cc", "Subject", "Sender")
 
-addr_rgx = re.compile("for ([^;]+);") # to clean received headers
-url_rgx = re.compile("http[s]?://(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]|(?:%[0-9a-fA-F][0-9a-fA-F]))+")
+addr_rgx = re.compile("for ([^;]+);")  # to clean received headers
+url_rgx = re.compile("http[s]?://"
+                     "(?:[a-zA-Z]|[0-9]|[$-_@.&+]|[!*(),]"
+                     "|(?:%[0-9a-fA-F][0-9a-fA-F]))+")
 
 
 def replace(text, elmts):
@@ -71,7 +82,7 @@ def tokenize_to(to):
     tokens = set()
 
     # Get both aliases and email addresses
-    fields  = TKENSEP.split(to.lower())
+    fields = TKENSEP.split(to.lower())
     for token in fields:
         token = clean_token(token)
         if '@' in token:
@@ -79,9 +90,10 @@ def tokenize_to(to):
         elif len(token) != 0:
             tokens.add(token)
 
-    # For every email address, extract element of interest (name, surname, domain…)
-    for email in emails:
-        fulluser, todom = email.split('@',1)
+    # For every email address, extract element of interest
+    # (name, surname, domain…)
+    for eml in emails:
+        fulluser, todom = eml.split('@', 1)
         for user_part in USERSEP.split(fulluser, 4):
             if len(user_part) > 2:
                 tokens.add(user_part)
@@ -138,7 +150,7 @@ def decode_hdr(dest):
         for b, charset in decode_header(i):
             # Dirty hack - if bytes
             if isinstance(b, bytes):
-                dcd_str = b.decode(charset) if charset is not None else b.decode()
+                dcd_str = b.decode(charset) if charset else b.decode()
                 dcd_dest.append(clean_token(dcd_str))
             # or string (because Python returns both)
             else:
@@ -147,10 +159,11 @@ def decode_hdr(dest):
     return dcd_dest
 
 
-def encode_part(part, charset = "utf-8", cte = None):
+def encode_part(part, charset="utf-8", cte=None):
     """ Reencode part using Content-Transfer-Encoding information """
     donothing = ['7bit', '8bit', 'binary']
-    encoders = {"base64": base64.b64encode, "quoted-printable": quopri.encodestring}
+    encoders = {"base64": base64.b64encode,
+                "quoted-printable": quopri.encodestring}
 
     if cte is None:
         return part
@@ -182,7 +195,10 @@ def url_ano_params(url):
     new_query = []
     for query in urllib.parse.parse_qsl(url.query):
         new_query.append((query[0], ano_x(query[1])))
-        new_url = urllib.parse.urlunparse((url[0], url[1], url[2], url[3], urllib.parse.urlencode(new_query), url[5]))
+        new_url = urllib.parse.urlunparse(
+                (url[0], url[1], url[2], url[3],
+                 urllib.parse.urlencode(new_query),
+                 url[5]))
 
     return new_url
 
@@ -238,7 +254,9 @@ def anon_part(part, elmts):
         new_load = url_replace_html(new_load)
 
     # Encoding back in the previously used encoding (if any)
-    cdc_load = encode_part(new_load, charset, part.get('content-transfer-encoding'))
+    cdc_load = encode_part(new_load, charset,
+                           part.get('content-transfer-encoding'))
+
     if cdc_load == "!ERR!":
         error(part, "Encoding error", out_streams)
     else:
@@ -250,11 +268,11 @@ def ano_coddhdr(msg, coddhdr, elmts):
     """ Anonymize internationalized headers """
     anohdr = []
     for b, charset in decode_header(msg.get(coddhdr)):
-        if charset != None:
+        if charset:
             dcd_hdr = b.decode(charset)
             dcd_hdr, count = replace(dcd_hdr, elmts)
-            anohdr.append((dcd_hdr , charset))
-        elif isinstance(b,str):
+            anohdr.append((dcd_hdr, charset))
+        elif isinstance(b, str):
             anohdr.append((b, charset))
         else:
             anohdr.append((b.decode(), charset))
@@ -266,22 +284,50 @@ def create_parser():
     """ Define every options for argument parsing """
     parser = argparse.ArgumentParser(description='')
     group = parser.add_mutually_exclusive_group()
-    group.add_argument('-', help="Read from standard input", dest='stdin', action='store_true')
-    group.add_argument('-i','--infile', help="Read from a file (eml/plain text format)", nargs='?')
-    parser.add_argument('--server', dest='server', help="SMTP server to use", default=SRVSMTP)
-    parser.add_argument('--from', dest='from_addr', help="Sender address", default=FROMADDR)
-    parser.add_argument('--to', dest='to_addr', help="Recipient address", default=FWDADDR)
-    parser.add_argument('--orig-to', dest='orig_to', help="To used in SMTP transaction", nargs='*', default=None)
-    parser.add_argument('--err', dest='err_addr', help="Error handling address", default=ERRADDR)
-    parser.add_argument('--sample', dest='smpl_addr', help="Sampling address", default=SMPADDR)
-    parser.add_argument('--no-dkim', dest='no_dkim', help="Remove DKIM fields", action='store_true')
-    parser.add_argument('-s', '--anonymise-sender', dest="is_sender_anon", action="store_true", default=False)
-    parser.add_argument('--no-mail', dest="send_mail", action="store_false", default=True, help="Tels the program not to send anonymized mail to smtp server")
-    parser.add_argument('--to-file', dest="to_file", default=False, action="store_true",
-                help="Send a copy of anonymized mail to a file must be used with at least --dest-dir and --error-dir")
-    parser.add_argument('--dest-dir', dest="dest_dir", default=None, help="directory path where your anonimized emails will be dumped")
-    parser.add_argument('--sample-dir', dest="sample_dir", default=None, help="directory path to use when you want to drop only a sample of your anonymized feed.")
-    parser.add_argument('--error-dir', dest="error_dir", default=None, help="directory where errors are dumped.")
+    group.add_argument('-',
+                       help="Read from standard input",
+                       dest='stdin', action='store_true')
+    group.add_argument('-i', '--infile',
+                       help="Read from a file (eml/plain text format)",
+                       nargs='?')
+    parser.add_argument('--server', dest='server',
+                        help="SMTP server to use", default=SRVSMTP)
+    parser.add_argument('--from',
+                        dest='from_addr',
+                        help="Sender address", default=FROMADDR)
+    parser.add_argument('--to',
+                        dest='to_addr',
+                        help="Recipient address", default=FWDADDR)
+    parser.add_argument('--orig-to', dest='orig_to',
+                        help="To used in SMTP transaction",
+                        nargs='*', default=None)
+    parser.add_argument('--err', dest='err_addr',
+                        help="Error handling address", default=ERRADDR)
+    parser.add_argument('--sample', dest='smpl_addr',
+                        help="Sampling address", default=SMPADDR)
+    parser.add_argument('--no-dkim', dest='no_dkim',
+                        help="Remove DKIM fields", action='store_true')
+    parser.add_argument('-s', '--anonymise-sender',
+                        dest="is_sender_anon",
+                        action="store_true", default=False)
+    parser.add_argument('--no-mail', dest="send_mail",
+                        action="store_false", default=True,
+                        help="Tels the program not to send\
+                        anonymized mail to smtp server")
+    parser.add_argument('--to-file', dest="to_file",
+                        default=False, action="store_true",
+                        help="Send a copy of anonymized mail to a file\
+                        must be used with at least --dest-dir and --error-dir")
+    parser.add_argument('--dest-dir', dest="dest_dir",
+                        default=None,
+                        help="directory path where your\
+                        anonymized emails will be dumped")
+    parser.add_argument('--sample-dir', dest="sample_dir",
+                        default=None,
+                        help="directory path to use when you\
+                        want to drop only a sample of your anonymized feed.")
+    parser.add_argument('--error-dir', dest="error_dir",
+                        default=None, help="directory where errors are dumped")
 
     return parser
 
@@ -289,11 +335,13 @@ def create_parser():
 def get_streams(args):
     out_streams = []
     if args.send_mail:
-        out_streams.append(SMTPMailOutStream(args.from_addr, args.to_addr,
-                                             args.err_addr, args.smpl_addr, args.server, True))
+        out_streams.append(SMTPMailOutStream(
+                           args.from_addr, args.to_addr,
+                           args.err_addr, args.smpl_addr, args.server, True))
     if args.to_file:
-            out_streams.append(FileMailOutStream(args.dest_dir, args.error_dir,
-                                                 args.sample_dir, args.sample_dir is not None))
+        out_streams.append(FileMailOutStream(
+                            args.dest_dir, args.error_dir,
+                            args.sample_dir, args.sample_dir is not None))
     if len(out_streams) == 0:
         print("You can't use --no-mail without --to-file")
         exit()
@@ -303,7 +351,8 @@ def get_streams(args):
 
 def get_newmsg(msg, elmts):
     """ Build the new, anonymized messaged and encode it correctly """
-    # Concatenate the anonymized headers with anonymized body = BOUM ! anonymized email !
+    # Concatenate the anonymized headers with
+    # anonymized body = BOUM ! anonymized email !
     hdr_end = msg.as_string().find('\n\n')
     if hdr_end == -1:
         error(msg, "No neck", out_streams)
@@ -371,7 +420,8 @@ def main():
             clean_hdr(part, args, elmts)
             payload_list = []
             for subpart in part.get_payload():
-                new_subpart = email.message_from_bytes(get_newmsg(subpart, elmts))
+                new_subpart = email.message_from_bytes(
+                                get_newmsg(subpart, elmts))
                 payload_list.append(anon_part(new_subpart, elmts))
             part.set_payload(payload_list)
 
@@ -381,13 +431,13 @@ def main():
     new_msg = get_newmsg(msg, elmts)
 
     # Sampling part
-    if random.randint(0,10) == 0:
+    if random.randint(0, 10) == 0:
         for stream in out_streams:
             stream.send_sample(new_msg)
 
     # Send final message
     for stream in out_streams:
-            stream.send_success(new_msg)
+        stream.send_success(new_msg)
 
     exit(0)
 
