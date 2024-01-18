@@ -77,6 +77,18 @@ def ano_x(str):
     return re.sub(r'\w', 'x', str)
 
 
+def replace_ipv6(match):
+    """ Test if regex match is indeed an IPv6
+    return dummy address if true
+    return original string if false """
+
+    try:
+        socket.inet_pton(socket.AF_INET6, match.group())
+        return "::"
+    except OSError:
+        return match.group()
+
+
 def clean_ip(hdr):
     """ Replace IPv4 and IPv6 in headers """
 
@@ -84,18 +96,7 @@ def clean_ip(hdr):
     hdr = re.sub(r"[0-9]+(?:\.[0-9]+){3}", "0.0.0.0", hdr)
 
     # IPv6
-    cursor = 0
-    ipv6 = re.compile(r"([a-f0-9:]+:+)+[a-f0-9]+")
-    while match := ipv6.search(hdr, cursor):
-        try:
-            socket.inet_pton(socket.AF_INET6, match.group())
-            hdr = hdr.replace(match.group(), "::")
-        except OSError:
-            pass
-        finally:
-            cursor = match.end()
-
-    return hdr
+    return re.sub(r"([a-f0-9:]+:+)+[a-f0-9]+", replace_ipv6, hdr)
 
 
 def tokenize_to(to):
