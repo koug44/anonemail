@@ -170,7 +170,7 @@ def url_replace(text):
     urlz = url_rgx.finditer(text)
     for url in urlz:
         url_object = urllib.parse.urlparse(url.group(0))
-        if url_object.query is not "":
+        if url_object.query:
             new_url = url_ano_params(url_object)
             text = text[:url.start()] + new_url + text[url.end():]
 
@@ -194,7 +194,7 @@ def url_replace_html(html):
     for tag in soup.findAll('a', href=True):
         url = tag['href']
         o = urllib.parse.urlparse(url)
-        if o.query is not "":
+        if o.query:
             new_url = url_ano_params(o)
             tag['href'] = new_url
 
